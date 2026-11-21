@@ -96,4 +96,47 @@ jobs:
           mkdir -p android/app/src/main/jniLibs/x86_64
 
           cp target/aarch64-linux-android/release/libtrinitymax.so   android/app/src/main/jniLibs/arm64-v8a/
-          cp target/armv7-linux-
+          cp target/armv7-linux-androideabi/release/libtrinitymax.so android/app/src/main/jniLibs/armeabi-v7a/
+          cp target/i686-linux-android/release/libtrinitymax.so      android/app/src/main/jniLibs/x86/
+          cp target/x86_64-linux-android/release/libtrinitymax.so    android/app/src/main/jniLibs/x86_64/
+
+          echo "--- staged .so files ---"
+          find android/app/src/main/jniLibs -type f | sort
+
+      - name: Download and install Gradle 8.5
+        run: |
+          wget -q https://services.gradle.org/distributions/gradle-8.5-bin.zip
+          unzip -q gradle-8.5-bin.zip
+          sudo mv gradle-8.5 /opt/gradle
+          echo "/opt/gradle/bin" >> $GITHUB_PATH
+
+      - name: Build APKs with Gradle
+        working-directory: android
+        run: gradle assembleDebug
+
+      - name: Stage artifacts
+        run: |
+          mkdir -p dist
+
+          for apk in android/app/build/outputs/apk/debug/*.apk; do
+            basename_apk=$(basename "$apk")
+            newname=$(echo "$basename_apk" | sed 's/app-/trinitymax_/' | sed 's/-debug//')
+            cp "$apk" "dist/$newname"
+          done
+
+          cp target/release/trinitymax_server dist/trinitymax_server
+          chmod +x dist/trinitymax_server
+
+          echo "--- final artifacts ---"
+          ls -lh dist/
+
+      - name: Upload APK + server artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: trinitymax-apks
+          path: |
+            dist/trinitymax_*.apk
+            dist/trinitymax_server
+            AI_PROMPT_STATE.md
+          if-no-files-found: error
+          retention-days: 30
