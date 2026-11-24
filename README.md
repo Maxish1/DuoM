@@ -1,4 +1,4 @@
-# TrinityMax
+# DuoM
 
 Cross-play Minecraft server core written in Rust (`src/lib.rs`) with Android JNI integration and automated GitHub Actions builds across four Android ABIs (`arm64-v8a`, `armeabi-v7a`, `x86`, and `x86_64`), alongside a standalone `trinitymax_server` binary.
 
