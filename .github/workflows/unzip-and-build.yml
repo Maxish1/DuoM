@@ -1,58 +1,76 @@
-name: build-trinitymax-apk
+name: DuoM Android Build
 
 on:
   push:
     branches: [main, master]
+    paths:
+      - 'trinitymax_android.zip'
+      - '.github/workflows/unzip-and-build.yml'
   workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build-apks:
+  build:
+    name: Extract source and build DuoM
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Unzip & patch project archive
-        id: unzip
+      - name: Extract source ZIP into repository workspace
+        shell: bash
         run: |
-          ZIP_FILE=$(find . -maxdepth 2 -name "trinitymax_android.zip" -o -name "*.zip" | head -n 1)
-          if [ -n "$ZIP_FILE" ]; then
-            echo "Extracting $ZIP_FILE..."
-            mkdir -p _unzipped
-            unzip -qo "$ZIP_FILE" -d _unzipped
-            PROJ_DIR=$(find _unzipped -maxdepth 3 -name "Cargo.toml" -printf '%h\n' | head -n 1)
-            if [ -n "$PROJ_DIR" ]; then
-              cp -rf "$PROJ_DIR"/* .
-            fi
-          fi
-          if [ -f "src/lib.rs" ]; then
-            sed -i 's/socket\.recv_from(&mut buf);/socket.recv_from(\&mut buf).await?;/' src/lib.rs
-            echo "--- patched src/lib.rs (lines 110-120) ---"
-            sed -n '110,120p' src/lib.rs
-          fi
-          ls -la
+          set -euo pipefail
+          ZIP_FILE="trinitymax_android.zip"
+          test -f "$ZIP_FILE" || { echo "::error::trinitymax_android.zip is missing"; exit 1; }
+          mkdir -p _duom_source
+          unzip -q "$ZIP_FILE" -d _duom_source
 
-      - name: Setup JDK 17
-        uses: actions/setup-java@v6
+          CARGO_FILE="$(find _duom_source -type f -name Cargo.toml -print -quit)"
+          test -n "$CARGO_FILE" || { echo "::error::Cargo.toml was not found inside the ZIP"; exit 1; }
+          PROJECT_DIR="$(dirname "$CARGO_FILE")"
+
+          # Copy all project files, including hidden files, into the workspace.
+          cp -a "$PROJECT_DIR"/. .
+          test -f Cargo.toml
+          test -d src
+          test -d android
+
+      - name: Patch known Bedrock MOTD format string
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("src/lib.rs")
+          if p.exists():
+              s = p.read_text()
+              old = '"MCPE;{};766;1.21.50;{};{};{};{};1;{};{};",'
+              new = '"MCPE;{};766;1.21.50;{};{};{};{};1;{};{};{};",'
+              if old in s:
+                  p.write_text(s.replace(old, new, 1))
+                  print("Applied Bedrock MOTD placeholder fix.")
+              else:
+                  print("MOTD line did not match known old version; leaving source unchanged.")
+          PY
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
         with:
+          distribution: temurin
           java-version: '17'
-          distribution: 'temurin'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v4
-        with:
-          packages: 'platform-tools'
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
 
-      - name: Setup Android NDK r26d
+      - name: Install Android NDK
         uses: nttld/setup-ndk@v1
-        id: setup-ndk
+        id: ndk
         with:
           ndk-version: r26d
 
-      - name: Install Rust + Android targets
+      - name: Install Rust and Android targets
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: |
@@ -61,10 +79,15 @@ jobs:
             i686-linux-android
             x86_64-linux-android
 
-      - name: Configure NDK linkers for cargo
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Configure Android NDK linkers
         env:
-          NDK: ${{ steps.setup-ndk.outputs.ndk-path }}
+          NDK: ${{ steps.ndk.outputs.ndk-path }}
+        shell: bash
         run: |
+          set -euo pipefail
           NDK_BIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
           mkdir -p .cargo
           cat > .cargo/config.toml <<EOF
@@ -81,24 +104,51 @@ jobs:
           linker = "$NDK_BIN/x86_64-linux-android21-clang"
           EOF
 
-      - name: Build Rust native libraries (4 Android ABIs)
+      - name: Build Rust libraries for Android
+        shell: bash
         run: |
-          set -e
-          for t in aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android; do
-            echo "=== building libtrinitymax.so for $t ==="
-            cargo build --release --lib --target "$t"
+          set -euo pipefail
+          for target in aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android; do
+            cargo build --release --lib --target "$target"
           done
 
-      - name: Build standalone server binary (host target)
-        run: |
-          cargo build --release --bin trinitymax_server
+      - name: Build standalone server
+        run: cargo build --release --bin trinitymax_server
 
-      - name: Stage native libraries into Android jniLibs
+      - name: Copy native libraries into Android project
+        shell: bash
         run: |
-          mkdir -p android/app/src/main/jniLibs/arm64-v8a
-          mkdir -p android/app/src/main/jniLibs/armeabi-v7a
-          mkdir -p android/app/src/main/jniLibs/x86
-          mkdir -p android/app/src/main/jniLibs/x86_64
+          set -euo pipefail
+          mkdir -p android/app/src/main/jniLibs/{arm64-v8a,armeabi-v7a,x86,x86_64}
+          cp target/aarch64-linux-android/release/libtrinitymax.so android/app/src/main/jniLibs/arm64-v8a/
+          cp target/armv7-linux-androideabi/release/libtrinitymax.so android/app/src/main/jniLibs/armeabi-v7a/
+          cp target/i686-linux-android/release/libtrinitymax.so android/app/src/main/jniLibs/x86/
+          cp target/x86_64-linux-android/release/libtrinitymax.so android/app/src/main/jniLibs/x86_64/
 
-          cp target/aarch64-linux-android/release/libtrinitymax.so   android/app/src/main/jniLibs/arm64-v8a/
-          cp target/armv7-linux-androideabi/release/libtrinitymax.so android/app/src/main/jniLibs/armeabi-
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.5'
+
+      - name: Build Android APK
+        working-directory: android
+        run: gradle assembleDebug --no-daemon
+
+      - name: Collect build outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          find android/app/build/outputs/apk/debug -maxdepth 1 -name '*.apk' -exec cp {} dist/ \;
+          cp target/release/trinitymax_server dist/
+          cp server.properties dist/ 2>/dev/null || true
+          cp whitelist.json dist/ 2>/dev/null || true
+          test -n "$(find dist -maxdepth 1 -name '*.apk' -print -quit)"
+
+      - name: Upload DuoM build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: DuoM-Android-APKs-and-server
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30
