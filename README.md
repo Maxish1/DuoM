@@ -1,17 +1,36 @@
 # DuoM
 
-Cross-play Minecraft server core written in Rust (`src/lib.rs`) with Android JNI integration and automated GitHub Actions builds across four Android ABIs (`arm64-v8a`, `armeabi-v7a`, `x86`, and `x86_64`), alongside a standalone `trinitymax_server` binary.
+This repository keeps the Android/Rust project source in `trinitymax_android.zip`.
+GitHub Actions extracts that archive into the runner workspace and then attempts
+to build the Android APK and standalone server binary.
 
-## Current Status
+## Repository layout
 
-* **Minimal Listener / Handshake Skeleton:** Currently implements initial connection/ping/handshake parsing rather than full gameplay, login, world generation, or chunk streaming.
-* **Java TCP (`0.0.0.0:25565`):** Reads incoming TCP data, decodes VarInt packet length/ID and handshake protocol version, and logs whether the client hits the `1.18+` crypto path (`>= 757`) or the pre-`1.18` / `1.16` path (`< 757`).
-* **Bedrock UDP (`0.0.0.0:19132`):** Listens for RakNet Unconnected Ping (`0x01`) packets and responds with a RakNet Pong (`0x1c`) and MOTD string.
-* **Android JNI Bridge:** Exposes `Java_com_trinitymax_server_RustBridge_startServer` to start the Tokio runtime on a background thread.
-* **Tunnel Loop:** Runs a periodic heartbeat task (`run_tunnel_client`) every 30 seconds.
+```text
+DuoM/
+├── .github/
+│   └── workflows/
+│       └── unzip-and-build.yml
+├── README.md
+└── trinitymax_android.zip
+```
 
-## GitHub Actions Build (`build-apks`)
+## Build with GitHub Actions
 
-* Compiles `libtrinitymax.so` across `aarch64-linux-android`, `armv7-linux-androideabi`, `i686-linux-android`, and `x86_64-linux-android`.
-* Builds the standalone `trinitymax_server` binary.
-* Builds Android APKs via Gradle (`assembleDebug`) and stages artifacts into `dist/` (`trinitymax-apks`).
+1. Upload the contents of this repository ZIP to the root of your GitHub repository.
+2. Keep `trinitymax_android.zip` at the repository root.
+3. Open **Actions** and enable workflows if GitHub asks.
+4. Run **DuoM Android Build** manually, or push a change to the ZIP/workflow on `main` or `master`.
+5. When the run completes, open its **Artifacts** section and download
+   `DuoM-Android-APKs-and-server`.
+
+The workflow extracts the ZIP, copies all files (including hidden files) into
+the runner workspace, applies the known Bedrock MOTD format-string fix when
+the source still matches the old line, builds Rust libraries for four Android
+ABIs, builds the standalone server, and runs Gradle `assembleDebug`.
+
+## Important project status
+
+A successful build only means the included source compiled and packaged. The
+source currently describes a Minecraft listener/handshake prototype; this
+repository does not guarantee complete Java/Bedrock gameplay compatibility.
